@@ -31,10 +31,16 @@ def _sanitize_name(name: str) -> str:
     return re.sub("[^A-Za-z0-9_]+", "_", name).lower()  # Replacing non alphanumeric characters by underscore
 
 
-def _extract_dtypes_from_table_details(response: "GetTableResponseTypeDef") -> dict[str, str]:
+def _extract_dtypes_from_table_details(
+    response: "GetTableResponseTypeDef",
+    filter_iceberg_current: bool = False,
+) -> dict[str, str]:
     dtypes: dict[str, str] = {}
     for col in response["Table"]["StorageDescriptor"]["Columns"]:
-        dtypes[col["Name"]] = col["Type"]
+        # Only return current fields if flag is enabled
+        if not filter_iceberg_current or col.get("Parameters", {}).get("iceberg.field.current") == "true":
+            dtypes[col["Name"]] = col["Type"]
+    # Add partition keys as columns
     if "PartitionKeys" in response["Table"]:
         for par in response["Table"]["PartitionKeys"]:
             dtypes[par["Name"]] = par["Type"]
@@ -52,20 +58,19 @@ def does_table_exist(
 
     Parameters
     ----------
-    database : str
+    database
         Database name.
-    table : str
+    table
         Table name.
-    boto3_session : boto3.Session(), optional
-        Boto3 Session. The default boto3 session will be used if boto3_session receive None.
-    catalog_id : str, optional
+    boto3_session
+        The default boto3 session will be used if **boto3_session** receive ``None``.
+    catalog_id
         The ID of the Data Catalog from which to retrieve Databases.
-        If none is provided, the AWS account ID is used by default.
+        If ``None`` is provided, the AWS account ID is used by default.
 
     Returns
     -------
-    bool
-        True if exists, otherwise False.
+        ``True`` if exists, otherwise ``False``.
 
     Examples
     --------
@@ -91,12 +96,11 @@ def sanitize_column_name(column: str) -> str:
 
     Parameters
     ----------
-    column : str
+    column
         Column name.
 
     Returns
     -------
-    str
         Normalized column name.
 
     Examples
@@ -122,12 +126,11 @@ def rename_duplicated_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     Parameters
     ----------
-    df : pandas.DataFrame
+    df
         Original Pandas DataFrame.
 
     Returns
     -------
-    pandas.DataFrame
         DataFrame with duplicated column names renamed.
 
     Examples
@@ -167,9 +170,9 @@ def sanitize_dataframe_columns_names(df: pd.DataFrame, handle_duplicate_columns:
 
     Parameters
     ----------
-    df : pandas.DataFrame
+    df
         Original Pandas DataFrame.
-    handle_duplicate_columns : str, optional
+    handle_duplicate_columns
         How to handle duplicate columns. Can be "warn" or "drop" or "rename".
         "drop" will drop all but the first duplicated column.
         "rename" will rename all duplicated columns with an incremental number.
@@ -177,7 +180,6 @@ def sanitize_dataframe_columns_names(df: pd.DataFrame, handle_duplicate_columns:
 
     Returns
     -------
-    pandas.DataFrame
         Original Pandas DataFrame with columns names normalized.
 
     Examples
@@ -220,12 +222,11 @@ def sanitize_table_name(table: str) -> str:
 
     Parameters
     ----------
-    table : str
+    table
         Table name.
 
     Returns
     -------
-    str
         Normalized table name.
 
     Examples
@@ -252,12 +253,11 @@ def drop_duplicated_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     Parameters
     ----------
-    df : pandas.DataFrame
+    df
         Original Pandas DataFrame.
 
     Returns
     -------
-    pandas.DataFrame
         Pandas DataFrame without duplicated columns.
 
     Examples
@@ -294,22 +294,21 @@ def extract_athena_types(
 
     Parameters
     ----------
-    df : pandas.DataFrame
+    df
         Pandas DataFrame.
-    index : bool
+    index
         Should consider the DataFrame index as a column?.
-    partition_cols : List[str], optional
+    partition_cols
         List of partitions names.
-    dtype: Dict[str, str], optional
+    dtype
         Dictionary of columns names and Athena/Glue types to be casted.
         Useful when you have columns with undetermined or mixed data types.
         (e.g. {'col name': 'bigint', 'col2 name': 'int'})
-    file_format : str, optional
+    file_format
         File format to be considered to place the index column: "parquet" | "csv".
 
     Returns
     -------
-    Tuple[Dict[str, str], Dict[str, str]]
         columns_types: Dictionary with keys as column names and values as
         data types (e.g. {'col0': 'bigint', 'col1': 'double'}). /
         partitions_types: Dictionary with keys as partition names

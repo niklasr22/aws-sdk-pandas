@@ -13,7 +13,14 @@ from awswrangler import _utils, exceptions, s3
 from awswrangler._config import apply_configs
 
 from ._connect import _validate_connection
-from ._utils import _create_table, _make_s3_auth_string, _upsert
+from ._utils import (
+    _add_new_table_columns,
+    _create_table,
+    _does_table_exist,
+    _get_rsh_columns_types,
+    _make_s3_auth_string,
+    _upsert,
+)
 
 if TYPE_CHECKING:
     try:
@@ -102,6 +109,7 @@ def to_sql(
     chunksize: int = 200,
     commit_transaction: bool = True,
     precombine_key: str | None = None,
+    add_new_columns: bool = False,
 ) -> None:
     """Write records stored in a DataFrame into Redshift.
 
@@ -112,18 +120,18 @@ def to_sql(
 
     Parameters
     ----------
-    df : pandas.DataFrame
+    df
         Pandas DataFrame https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.DataFrame.html
-    con : redshift_connector.Connection
+    con
         Use redshift_connector.connect() to use "
         "credentials directly or wr.redshift.connect() to fetch it from the Glue Catalog.
-    table : str
+    table
         Table name
-    schema : str
+    schema
         Schema name
-    mode : str
+    mode
         Append, overwrite or upsert.
-    overwrite_method : str
+    overwrite_method
         Drop, cascade, truncate, or delete. Only applicable in overwrite mode.
 
         - "drop" - ``DROP ... RESTRICT`` - drops the table. Fails if there are any views that depend on it.
@@ -132,62 +140,58 @@ def to_sql(
           starts a new one, hence the overwrite happens in two transactions and is not atomic.
         - "delete" - ``DELETE FROM ...`` - deletes all rows from the table. Slow relative to the other methods.
 
-    index : bool
+    index
         True to store the DataFrame index as a column in the table,
         otherwise False to ignore it.
-    dtype : Dict[str, str], optional
+    dtype
         Dictionary of columns names and Redshift types to be casted.
         Useful when you have columns with undetermined or mixed data types.
         (e.g. {'col name': 'VARCHAR(10)', 'col2 name': 'FLOAT'})
-    diststyle : str
+    diststyle
         Redshift distribution styles. Must be in ["AUTO", "EVEN", "ALL", "KEY"].
         https://docs.aws.amazon.com/redshift/latest/dg/t_Distributing_data.html
-    distkey : str, optional
+    distkey
         Specifies a column name or positional number for the distribution key.
-    sortstyle : str
+    sortstyle
         Sorting can be "COMPOUND" or "INTERLEAVED".
         https://docs.aws.amazon.com/redshift/latest/dg/t_Sorting_data.html
-    sortkey : List[str], optional
+    sortkey
         List of columns to be sorted.
-    primary_keys : List[str], optional
+    primary_keys
         Primary keys.
-    varchar_lengths_default : int
+    varchar_lengths_default
         The size that will be set for all VARCHAR columns not specified with varchar_lengths.
-    varchar_lengths : Dict[str, int], optional
+    varchar_lengths
         Dict of VARCHAR length by columns. (e.g. {"col1": 10, "col5": 200}).
-    use_column_names: bool
+    use_column_names
         If set to True, will use the column names of the DataFrame for generating the INSERT SQL Query.
         E.g. If the DataFrame has two columns `col1` and `col3` and `use_column_names` is True, data will only be
         inserted into the database columns `col1` and `col3`.
-    lock : bool
+    lock
         True to execute LOCK command inside the transaction to force serializable isolation.
-    chunksize : int
+    chunksize
         Number of rows which are inserted with each SQL query. Defaults to inserting 200 rows per query.
-    commit_transaction : bool
+    commit_transaction
         Whether to commit the transaction. True by default.
-    precombine_key : str, optional
+    precombine_key
         When there is a primary_key match during upsert, this column will change the upsert method,
         comparing the values of the specified column from source and target, and keeping the
         larger of the two. Will only work when mode = upsert.
-
-    Returns
-    -------
-    None
-        None.
+    add_new_columns
+        If True, it automatically adds the new DataFrame columns into the target table.
 
     Examples
     --------
     Writing to Redshift using a Glue Catalog Connections
 
     >>> import awswrangler as wr
-    >>> con = wr.redshift.connect("MY_GLUE_CONNECTION")
-    >>> wr.redshift.to_sql(
-    ...     df=df,
-    ...     table="my_table",
-    ...     schema="public",
-    ...     con=con
-    ... )
-    >>> con.close()
+    >>> with wr.redshift.connect("MY_GLUE_CONNECTION") as con"
+    ...     wr.redshift.to_sql(
+    ...         df=df,
+    ...         table="my_table",
+    ...         schema="public",
+    ...         con=con,
+    ...     )
 
     """
     if df.empty is True:
@@ -197,6 +201,19 @@ def to_sql(
     con.autocommit = False
     try:
         with con.cursor() as cursor:
+            if add_new_columns and _does_table_exist(cursor=cursor, schema=schema, table=table):
+                redshift_columns_types = _get_rsh_columns_types(
+                    df=df,
+                    path=None,
+                    index=index,
+                    dtype=dtype,
+                    varchar_lengths_default=varchar_lengths_default,
+                    varchar_lengths=varchar_lengths,
+                )
+                _add_new_table_columns(
+                    cursor=cursor, schema=schema, table=table, redshift_columns_types=redshift_columns_types
+                )
+
             created_table, created_schema = _create_table(
                 df=df,
                 path=None,
@@ -286,6 +303,7 @@ def copy_from_files(  # noqa: PLR0913
     s3_additional_kwargs: dict[str, str] | None = None,
     precombine_key: str | None = None,
     column_names: list[str] | None = None,
+    add_new_columns: bool = False,
 ) -> None:
     """Load files from S3 to a Table on Amazon Redshift (Through COPY command).
 
@@ -308,40 +326,40 @@ def copy_from_files(  # noqa: PLR0913
 
     Parameters
     ----------
-    path : str
+    path
         S3 prefix (e.g. s3://bucket/prefix/)
-    con : redshift_connector.Connection
+    con
         Use redshift_connector.connect() to use "
         "credentials directly or wr.redshift.connect() to fetch it from the Glue Catalog.
-    table : str
+    table
         Table name
-    schema : str
+    schema
         Schema name
-    iam_role : str, optional
+    iam_role
         AWS IAM role with the related permissions.
-    aws_access_key_id : str, optional
+    aws_access_key_id
         The access key for your AWS account.
-    aws_secret_access_key : str, optional
+    aws_secret_access_key
         The secret key for your AWS account.
-    aws_session_token : str, optional
+    aws_session_token
         The session key for your AWS account. This is only needed when you are using temporary credentials.
-    data_format: str, optional
+    data_format
         Data format to be loaded.
         Supported values are Parquet, ORC, and CSV.
         Default is Parquet.
-    redshift_column_types: dict, optional
+    redshift_column_types
         Dictionary with keys as column names and values as Redshift column types.
         Only used when ``data_format`` is CSV.
 
         e.g. ```{'col1': 'BIGINT', 'col2': 'VARCHAR(256)'}```
-    parquet_infer_sampling : float
+    parquet_infer_sampling
         Random sample ratio of files that will have the metadata inspected.
         Must be `0.0 < sampling <= 1.0`.
         The higher, the more accurate.
         The lower, the faster.
-    mode : str
+    mode
         Append, overwrite or upsert.
-    overwrite_method : str
+    overwrite_method
         Drop, cascade, truncate, or delete. Only applicable in overwrite mode.
 
         "drop" - ``DROP ... RESTRICT`` - drops the table. Fails if there are any views that depend on it.
@@ -349,64 +367,61 @@ def copy_from_files(  # noqa: PLR0913
         "truncate" - ``TRUNCATE ...`` - truncates the table, but immediately commits current
         transaction & starts a new one, hence the overwrite happens in two transactions and is not atomic.
         "delete" - ``DELETE FROM ...`` - deletes all rows from the table. Slow relative to the other methods.
-    diststyle : str
+    diststyle
         Redshift distribution styles. Must be in ["AUTO", "EVEN", "ALL", "KEY"].
         https://docs.aws.amazon.com/redshift/latest/dg/t_Distributing_data.html
-    distkey : str, optional
+    distkey
         Specifies a column name or positional number for the distribution key.
-    sortstyle : str
+    sortstyle
         Sorting can be "COMPOUND" or "INTERLEAVED".
         https://docs.aws.amazon.com/redshift/latest/dg/t_Sorting_data.html
-    sortkey : List[str], optional
+    sortkey
         List of columns to be sorted.
-    primary_keys : List[str], optional
+    primary_keys
         Primary keys.
-    varchar_lengths_default : int
+    varchar_lengths_default
         The size that will be set for all VARCHAR columns not specified with varchar_lengths.
-    varchar_lengths : Dict[str, int], optional
+    varchar_lengths
         Dict of VARCHAR length by columns. (e.g. {"col1": 10, "col5": 200}).
-    serialize_to_json : bool
+    serialize_to_json
         Should awswrangler add SERIALIZETOJSON parameter into the COPY command?
         SERIALIZETOJSON is necessary to load nested data
         https://docs.aws.amazon.com/redshift/latest/dg/ingest-super.html#copy_json
-    path_suffix : Union[str, List[str], None]
+    path_suffix
         Suffix or List of suffixes to be scanned on s3 for the schema extraction
         (e.g. [".gz.parquet", ".snappy.parquet"]).
         Only has effect during the table creation.
         If None, will try to read all files. (default)
-    path_ignore_suffix : Union[str, List[str], None]
+    path_ignore_suffix
         Suffix or List of suffixes for S3 keys to be ignored during the schema extraction.
         (e.g. [".csv", "_SUCCESS"]).
         Only has effect during the table creation.
         If None, will try to read all files. (default)
-    use_threads : bool, int
+    use_threads
         True to enable concurrent requests, False to disable multiple threads.
         If enabled os.cpu_count() will be used as the max number of threads.
         If integer is provided, specified number is used.
-    lock : bool
+    lock
         True to execute LOCK command inside the transaction to force serializable isolation.
-    commit_transaction : bool
+    commit_transaction
         Whether to commit the transaction. True by default.
-    manifest : bool
+    manifest
         If set to true path argument accepts a S3 uri to a manifest file.
-    sql_copy_extra_params : Optional[List[str]]
+    sql_copy_extra_params
         Additional copy parameters to pass to the command. For example: ["STATUPDATE ON"]
-    boto3_session : boto3.Session(), optional
-        Boto3 Session. The default boto3 session will be used if boto3_session receive None.
-    s3_additional_kwargs : Dict[str, str], optional
+    boto3_session
+        The default boto3 session will be used if **boto3_session** is ``None``.
+    s3_additional_kwargs
         Forwarded to botocore requests.
         e.g. s3_additional_kwargs={'ServerSideEncryption': 'aws:kms', 'SSEKMSKeyId': 'YOUR_KMS_KEY_ARN'}
-    precombine_key : str, optional
+    precombine_key
         When there is a primary_key match during upsert, this column will change the upsert method,
         comparing the values of the specified column from source and target, and keeping the
         larger of the two. Will only work when mode = upsert.
-    column_names: List[str], optional
+    column_names
         List of column names to map source data fields to the target columns.
-
-    Returns
-    -------
-    None
-        None.
+    add_new_columns
+        If True, it automatically adds the new DataFrame columns into the target table.
 
     Examples
     --------
@@ -431,6 +446,27 @@ def copy_from_files(  # noqa: PLR0913
     con.autocommit = False
     try:
         with con.cursor() as cursor:
+            if add_new_columns and _does_table_exist(cursor=cursor, schema=schema, table=table):
+                redshift_columns_types = _get_rsh_columns_types(
+                    df=None,
+                    path=path,
+                    index=False,
+                    dtype=None,
+                    varchar_lengths_default=varchar_lengths_default,
+                    varchar_lengths=varchar_lengths,
+                    parquet_infer_sampling=parquet_infer_sampling,
+                    path_suffix=path_suffix,
+                    path_ignore_suffix=path_ignore_suffix,
+                    use_threads=use_threads,
+                    boto3_session=boto3_session,
+                    s3_additional_kwargs=s3_additional_kwargs,
+                    data_format=data_format,
+                    redshift_column_types=redshift_column_types,
+                    manifest=manifest,
+                )
+                _add_new_table_columns(
+                    cursor=cursor, schema=schema, table=table, redshift_columns_types=redshift_columns_types
+                )
             created_table, created_schema = _create_table(
                 df=None,
                 path=path,
@@ -532,6 +568,7 @@ def copy(  # noqa: PLR0913
     max_rows_by_file: int | None = 10_000_000,
     precombine_key: str | None = None,
     use_column_names: bool = False,
+    add_new_columns: bool = False,
 ) -> None:
     """Load Pandas DataFrame as a Table on Amazon Redshift using parquet files on S3 as stage.
 
@@ -558,36 +595,36 @@ def copy(  # noqa: PLR0913
 
     Parameters
     ----------
-    df : pandas.DataFrame
+    df
         Pandas DataFrame.
-    path : str
+    path
         S3 path to write stage files (e.g. s3://bucket_name/any_name/).
         Note: This path must be empty.
-    con : redshift_connector.Connection
+    con
         Use redshift_connector.connect() to use "
         "credentials directly or wr.redshift.connect() to fetch it from the Glue Catalog.
-    table : str
+    table
         Table name
-    schema : str
+    schema
         Schema name
-    iam_role : str, optional
+    iam_role
         AWS IAM role with the related permissions.
-    aws_access_key_id : str, optional
+    aws_access_key_id
         The access key for your AWS account.
-    aws_secret_access_key : str, optional
+    aws_secret_access_key
         The secret key for your AWS account.
-    aws_session_token : str, optional
+    aws_session_token
         The session key for your AWS account. This is only needed when you are using temporary credentials.
-    index : bool
+    index
         True to store the DataFrame index in file, otherwise False to ignore it.
-    dtype : Dict[str, str], optional
+    dtype
         Dictionary of columns names and Athena/Glue types to be casted.
         Useful when you have columns with undetermined or mixed data types.
         Only takes effect if dataset=True.
         (e.g. {'col name': 'bigint', 'col2 name': 'int'})
-    mode : str
+    mode
         Append, overwrite or upsert.
-    overwrite_method : str
+    overwrite_method
         Drop, cascade, truncate, or delete. Only applicable in overwrite mode.
 
         "drop" - ``DROP ... RESTRICT`` - drops the table. Fails if there are any views that depend on it.
@@ -595,70 +632,66 @@ def copy(  # noqa: PLR0913
         "truncate" - ``TRUNCATE ...`` - truncates the table, but immediately commits current
         transaction & starts a new one, hence the overwrite happens in two transactions and is not atomic.
         "delete" - ``DELETE FROM ...`` - deletes all rows from the table. Slow relative to the other methods.
-    diststyle : str
+    diststyle
         Redshift distribution styles. Must be in ["AUTO", "EVEN", "ALL", "KEY"].
         https://docs.aws.amazon.com/redshift/latest/dg/t_Distributing_data.html
-    distkey : str, optional
+    distkey
         Specifies a column name or positional number for the distribution key.
-    sortstyle : str
+    sortstyle
         Sorting can be "COMPOUND" or "INTERLEAVED".
         https://docs.aws.amazon.com/redshift/latest/dg/t_Sorting_data.html
-    sortkey : List[str], optional
+    sortkey
         List of columns to be sorted.
-    primary_keys : List[str], optional
+    primary_keys
         Primary keys.
-    varchar_lengths_default : int
+    varchar_lengths_default
         The size that will be set for all VARCHAR columns not specified with varchar_lengths.
-    varchar_lengths : Dict[str, int], optional
+    varchar_lengths
         Dict of VARCHAR length by columns. (e.g. {"col1": 10, "col5": 200}).
-    keep_files : bool
+    keep_files
         Should keep stage files?
-    use_threads : bool, int
+    use_threads
         True to enable concurrent requests, False to disable multiple threads.
         If enabled os.cpu_count() will be used as the max number of threads.
         If integer is provided, specified number is used.
-    lock : bool
+    lock
         True to execute LOCK command inside the transaction to force serializable isolation.
-    commit_transaction : bool
+    commit_transaction
         Whether to commit the transaction. True by default.
-    sql_copy_extra_params : Optional[List[str]]
+    sql_copy_extra_params
         Additional copy parameters to pass to the command. For example: ["STATUPDATE ON"]
-    boto3_session : boto3.Session(), optional
-        Boto3 Session. The default boto3 session will be used if boto3_session receive None.
-    s3_additional_kwargs : Dict[str, str], optional
+    boto3_session
+        The default boto3 session will be used if **boto3_session** is ``None``.
+    s3_additional_kwargs
         Forwarded to botocore requests.
         e.g. s3_additional_kwargs={'ServerSideEncryption': 'aws:kms', 'SSEKMSKeyId': 'YOUR_KMS_KEY_ARN'}
-    max_rows_by_file : int
+    max_rows_by_file
         Max number of rows in each file.
         (e.g. 33554432, 268435456)
-    precombine_key : str, optional
+    precombine_key
         When there is a primary_key match during upsert, this column will change the upsert method,
         comparing the values of the specified column from source and target, and keeping the
         larger of the two. Will only work when mode = upsert.
-    use_column_names: bool
+    use_column_names
         If set to True, will use the column names of the DataFrame for generating the INSERT SQL Query.
         E.g. If the DataFrame has two columns `col1` and `col3` and `use_column_names` is True, data will only be
         inserted into the database columns `col1` and `col3`.
-
-    Returns
-    -------
-    None
-        None.
+    add_new_columns
+        If True, it automatically adds the new DataFrame columns into the target table.
 
     Examples
     --------
     >>> import awswrangler as wr
     >>> import pandas as pd
-    >>> con = wr.redshift.connect("MY_GLUE_CONNECTION")
-    >>> wr.redshift.copy(
-    ...     df=pd.DataFrame({'col': [1, 2, 3]}),
-    ...     path="s3://bucket/my_parquet_files/",
-    ...     con=con,
-    ...     table="my_table",
-    ...     schema="public",
-    ...     iam_role="arn:aws:iam::XXX:role/XXX"
-    ... )
-    >>> con.close()
+    >>> with wr.redshift.connect("MY_GLUE_CONNECTION") as con:
+    ...     wr.redshift.copy(
+    ...         df=pd.DataFrame({'col': [1, 2, 3]}),
+    ...         path="s3://bucket/my_parquet_files/",
+    ...         con=con,
+    ...         table="my_table",
+    ...         schema="public",
+    ...         iam_role="arn:aws:iam::XXX:role/XXX",
+    ...     )
 
     """
     path = path[:-1] if path.endswith("*") else path
@@ -709,6 +742,7 @@ def copy(  # noqa: PLR0913
             sql_copy_extra_params=sql_copy_extra_params,
             precombine_key=precombine_key,
             column_names=column_names,
+            add_new_columns=add_new_columns,
         )
     finally:
         if keep_files is False:

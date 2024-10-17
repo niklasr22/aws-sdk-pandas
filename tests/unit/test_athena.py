@@ -135,7 +135,6 @@ def test_athena_ctas(path, path2, path3, glue_table, glue_table2, glue_database,
     assert len(wr.s3.list_objects(path=path3)) == 0
 
 
-@pytest.mark.modin_index
 def test_athena_read_sql_ctas_bucketing(path, path2, glue_table, glue_table2, glue_database, glue_ctas_database):
     df = pd.DataFrame({"c0": [0, 1], "c1": ["foo", "bar"]})
     wr.s3.to_parquet(
@@ -462,6 +461,65 @@ def test_athena_paramstyle_qmark_parameters(
     assert len(df_out) == 1
 
 
+@pytest.mark.parametrize(
+    "ctas_approach,unload_approach",
+    [
+        pytest.param(False, False, id="regular"),
+        pytest.param(True, False, id="ctas"),
+        pytest.param(False, True, id="unload"),
+    ],
+)
+def test_athena_paramstyle_qmark_skip_caching(
+    path: str,
+    path2: str,
+    glue_database: str,
+    glue_table: str,
+    workgroup0: str,
+    ctas_approach: bool,
+    unload_approach: bool,
+) -> None:
+    wr.s3.to_parquet(
+        df=get_df(),
+        path=path,
+        index=False,
+        dataset=True,
+        mode="overwrite",
+        database=glue_database,
+        table=glue_table,
+        partition_cols=["par0", "par1"],
+    )
+
+    df_out = wr.athena.read_sql_query(
+        sql=f"SELECT * FROM {glue_table} WHERE string = ?",
+        database=glue_database,
+        ctas_approach=ctas_approach,
+        unload_approach=unload_approach,
+        workgroup=workgroup0,
+        params=["Washington"],
+        paramstyle="qmark",
+        keep_files=False,
+        s3_output=path2,
+        athena_cache_settings={"max_cache_seconds": 300},
+    )
+
+    assert len(df_out) == 1 and df_out.iloc[0]["string"] == "Washington"
+
+    df_out = wr.athena.read_sql_query(
+        sql=f"SELECT * FROM {glue_table} WHERE string = ?",
+        database=glue_database,
+        ctas_approach=ctas_approach,
+        unload_approach=unload_approach,
+        workgroup=workgroup0,
+        params=["Seattle"],
+        paramstyle="qmark",
+        keep_files=False,
+        s3_output=path2,
+        athena_cache_settings={"max_cache_seconds": 300},
+    )
+
+    assert len(df_out) == 1 and df_out.iloc[0]["string"] == "Seattle"
+
+
 def test_read_sql_query_parameter_formatting_respects_prefixes(path, glue_database, glue_table, workgroup0):
     wr.s3.to_parquet(
         df=get_df(),
@@ -703,6 +761,17 @@ def test_athena_time_zone(glue_database):
     assert len(df.columns) == 2
     assert df["type"][0] == "timestamp(3) with time zone"
     assert df["value"][0].year == datetime.datetime.utcnow().year
+
+
+@pytest.mark.parametrize("dtype_backend", ["numpy_nullable", "pyarrow"])
+def test_athena_time_type(glue_database: str, dtype_backend: str) -> None:
+    df = wr.athena.read_sql_query(
+        "SELECT time '13:24:11' as col", glue_database, ctas_approach=False, dtype_backend=dtype_backend
+    )
+    if dtype_backend == "pyarrow":
+        assert df["col"].iloc[0] == datetime.time(13, 24, 11)
+    else:
+        assert df["col"].iloc[0] == "13:24:11"
 
 
 @pytest.mark.parametrize(
@@ -969,8 +1038,8 @@ def test_athena_nan_inf(glue_database, ctas_approach, data_source):
     assert df.shape == (1, 4)
     assert df.dtypes.to_list() == ["float64", "float64", "float64", "float64"]
     assert np.isnan(df.nan.iloc[0])
-    assert df.inf.iloc[0] == np.PINF
-    assert df.inf_n.iloc[0] == np.NINF
+    assert df.inf.iloc[0] == np.inf
+    assert df.inf_n.iloc[0] == -np.inf
     assert df.regular.iloc[0] == 1.2
 
 
@@ -1002,7 +1071,6 @@ def test_bucketing_catalog_parquet_table(path, glue_database, glue_table):
     assert table["StorageDescriptor"]["BucketColumns"] == bucket_cols
 
 
-@pytest.mark.modin_index
 @pytest.mark.parametrize("bucketing_data", [[0, 1, 2], [False, True, False], ["b", "c", "d"]])
 @pytest.mark.parametrize(
     "dtype",
@@ -1091,7 +1159,6 @@ def test_bucketing_catalog_csv_table(path, glue_database, glue_table):
     assert table["StorageDescriptor"]["BucketColumns"] == bucket_cols
 
 
-@pytest.mark.modin_index
 @pytest.mark.parametrize("bucketing_data", [[0, 1, 2], [False, True, False], ["b", "c", "d"]])
 @pytest.mark.parametrize(
     "dtype",
@@ -1157,7 +1224,6 @@ def test_bucketing_csv_dataset(path, glue_database, glue_table, bucketing_data, 
         assert all(x in bucketing_data for x in loaded_df["c0"].to_list())
 
 
-@pytest.mark.modin_index
 @pytest.mark.parametrize("bucketing_data", [[0, 1, 2, 3], [False, True, False, True], ["b", "c", "d", "e"]])
 def test_combined_bucketing_partitioning_parquet_dataset(path, glue_database, glue_table, bucketing_data):
     nb_of_buckets = 2
@@ -1285,7 +1351,6 @@ def test_combined_bucketing_partitioning_csv_dataset(path, glue_database, glue_t
         assert all(x in bucketing_data for x in loaded_df["c0"].to_list())
 
 
-@pytest.mark.modin_index
 def test_multiple_bucketing_columns_parquet_dataset(path, glue_database, glue_table):
     nb_of_buckets = 2
     df = pd.DataFrame({"c0": [0, 1, 2, 3], "c1": [4, 6, 5, 7], "c2": ["foo", "bar", "baz", "boo"]})

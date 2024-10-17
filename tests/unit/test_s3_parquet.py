@@ -410,6 +410,11 @@ def test_index_recovery_simple_str(path, use_threads):
     assert_pandas_equals(df, df2)
 
 
+@pytest.mark.xfail(
+    raises=AssertionError,
+    reason="https://github.com/ray-project/ray/issues/37771",
+    condition=is_ray_modin,
+)
 @pytest.mark.parametrize("use_threads", [True, False, 2])
 def test_index_recovery_partitioned_str(path, use_threads):
     df = pd.DataFrame(
@@ -441,7 +446,6 @@ def test_range_index_recovery_simple(path, use_threads):
     assert_pandas_equals(df.reset_index(level=0), df2.reset_index(level=0))
 
 
-@pytest.mark.modin_index
 @pytest.mark.xfail(
     raises=AssertionError,
     reason="https://github.com/ray-project/ray/issues/37771",
@@ -492,7 +496,6 @@ def test_multi_index_recovery_nameless(path, use_threads):
     assert_pandas_equals(df.reset_index(), df2.reset_index())
 
 
-@pytest.mark.modin_index
 @pytest.mark.xfail(
     raises=(wr.exceptions.InvalidArgumentCombination, AssertionError),
     reason="Named index not working when partitioning to a single file",
@@ -529,7 +532,11 @@ def test_index_schema_validation(path, glue_database, glue_table, index):
     assert_pandas_equals(pd.concat([df, df]), df2)
 
 
-@pytest.mark.modin_index
+@pytest.mark.xfail(
+    raises=AssertionError,
+    reason="https://github.com/ray-project/ray/issues/37771",
+    condition=is_ray_modin,
+)
 @pytest.mark.parametrize("index", [["c0"], ["c0", "c1"]])
 @pytest.mark.parametrize("partition_cols", [["c0"], ["c0", "c1"]])
 def test_index_partition(path, glue_database, glue_table, index, partition_cols):
@@ -614,7 +621,6 @@ def test_to_parquet_dataset_sanitize(path):
     assert df2.par.to_list() == ["a", "b"]
 
 
-@pytest.mark.modin_index
 @pytest.mark.parametrize("use_threads", [False, True, 2])
 def test_timezone_file(path, use_threads):
     file_path = f"{path}0.parquet"
@@ -625,7 +631,6 @@ def test_timezone_file(path, use_threads):
     assert_pandas_equals(df, df2)
 
 
-@pytest.mark.modin_index
 @pytest.mark.parametrize("use_threads", [True, False, 2])
 def test_timezone_file_columns(path, use_threads):
     file_path = f"{path}0.parquet"
@@ -679,6 +684,11 @@ def test_validate_columns(path, partition_cols) -> None:
         wr.s3.read_parquet(path, columns=["a", "b", "c"], dataset=True, validate_schema=True)
 
 
+@pytest.mark.xfail(
+    raises=AssertionError,
+    reason="https://github.com/ray-project/ray/issues/37771",
+    condition=is_ray_modin,
+)
 @pytest.mark.parametrize("use_threads", [True, False, 2])
 def test_empty_column(path, use_threads):
     df = pd.DataFrame({"c0": [1, 2, 3], "c1": [None, None, None], "par": ["a", "b", "c"]})
@@ -698,7 +708,6 @@ def test_mixed_types_column(path) -> None:
         wr.s3.to_parquet(df, path, dataset=True, partition_cols=["par"])
 
 
-@pytest.mark.modin_index
 @pytest.mark.parametrize("compression", [None, "snappy", "gzip", "zstd"])
 def test_parquet_compression(path, compression) -> None:
     df = pd.DataFrame({"id": [1, 2, 3]}, dtype="Int64")
@@ -713,17 +722,23 @@ def test_parquet_compression(path, compression) -> None:
     "schema", [None, pa.schema([pa.field("c0", pa.int64()), pa.field("c1", pa.int64()), pa.field("par", pa.string())])]
 )
 def test_empty_file(path, use_threads, schema):
+    from awswrangler import _utils
+
     df = pd.DataFrame({"c0": [1, 2, 3], "c1": [None, None, None], "par": ["a", "b", "c"]})
     df.index = df.index.astype("Int64")
     df["c0"] = df["c0"].astype("Int64")
     df["par"] = df["par"].astype("string")
     wr.s3.to_parquet(df, path, index=True, dataset=True, partition_cols=["par"])
-    bucket, key = wr._utils.parse_path(f"{path}test.csv")
+
+    bucket, key = _utils.parse_path(f"{path}test.csv")
     boto3.client("s3").put_object(Body=b"", Bucket=bucket, Key=key)
     with pytest.raises(wr.exceptions.InvalidFile):
         wr.s3.read_parquet(path, use_threads=use_threads, ignore_empty=False, schema=schema)
+
     df2 = wr.s3.read_parquet(path, dataset=True, use_threads=use_threads)
+    df2 = df2.sort_values(by=["c0"])
     df2["par"] = df2["par"].astype("string")
+
     assert_pandas_equals(df, df2)
 
 
@@ -953,6 +968,9 @@ def test_write_to_parquet_with_client_encryption_config(
     )
     if chunked:
         df_out = pd.concat(list(df_out), ignore_index=True)
+    else:
+        df_out = df_out.sort_values("c0").reset_index(drop=True)
+
     assert_pandas_equals(df, df_out)
 
 
@@ -1014,3 +1032,39 @@ def test_read_from_access_point(access_point_path_path: str) -> None:
     wr.s3.to_parquet(df, path)
     df_out = wr.s3.read_parquet(path)
     assert df_out.shape == (3, 3)
+
+
+@pytest.mark.parametrize("use_threads", [True, False, 2])
+def test_save_dataframe_with_ms_units(path, glue_database, glue_table, use_threads):
+    df = pd.DataFrame(
+        {
+            "c0": [
+                "2023-01-01 00:00:00.000",
+                "2023-01-02 00:00:00.000",
+                "0800-01-01 00:00:00.000",  # Out-of-bounds timestamp
+                "2977-09-21 00:12:43.000",
+            ]
+        }
+    )
+
+    wr.s3.to_parquet(
+        df,
+        path,
+        dataset=True,
+        database=glue_database,
+        table=glue_table,
+        use_threads=use_threads,
+    )
+
+    # Saving exactly the same data twice. This ensures that even if the athena table exists, the flow of using its metadata
+    # to identify the schema of the data is working correctly.
+    wr.s3.to_parquet(
+        df,
+        path,
+        dataset=True,
+        database=glue_database,
+        table=glue_table,
+        use_threads=use_threads,
+    )
+    df_out = wr.s3.read_parquet_table(table=glue_table, database=glue_database)
+    assert df_out.shape == (8, 1)

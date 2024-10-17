@@ -16,7 +16,6 @@ from typing import (
     Dict,
     Generator,
     NamedTuple,
-    Sequence,
     TypedDict,
     Union,
     cast,
@@ -36,7 +35,8 @@ from . import _executions
 from ._cache import _cache_manager, _LocalMetadataCacheManager
 
 if TYPE_CHECKING:
-    from mypy_boto3_glue.type_defs import ColumnTypeDef
+    from mypy_boto3_athena.type_defs import QueryExecutionTypeDef
+    from mypy_boto3_glue.type_defs import ColumnOutputTypeDef
 
 _QUERY_FINAL_STATES: list[str] = ["FAILED", "SUCCEEDED", "CANCELLED"]
 _QUERY_WAIT_POLLING_DELAY: float = 1.0  # SECONDS
@@ -54,7 +54,7 @@ class _QueryMetadata(NamedTuple):
     binaries: list[str]
     output_location: str | None
     manifest_location: str | None
-    raw_payload: dict[str, Any]
+    raw_payload: "QueryExecutionTypeDef"
 
 
 class _WorkGroupConfig(NamedTuple):
@@ -215,7 +215,7 @@ def _get_query_metadata(
     query_execution_id: str,
     boto3_session: boto3.Session | None = None,
     categories: list[str] | None = None,
-    query_execution_payload: dict[str, Any] | None = None,
+    query_execution_payload: "QueryExecutionTypeDef" | None = None,
     metadata_cache_manager: _LocalMetadataCacheManager | None = None,
     athena_query_wait_polling_delay: float = _QUERY_WAIT_POLLING_DELAY,
     execution_params: list[str] | None = None,
@@ -226,12 +226,15 @@ def _get_query_metadata(
         if query_execution_payload["Status"]["State"] != "SUCCEEDED":
             reason: str = query_execution_payload["Status"]["StateChangeReason"]
             raise exceptions.QueryFailed(f"Query error: {reason}")
-        _query_execution_payload: dict[str, Any] = query_execution_payload
+        _query_execution_payload = query_execution_payload
     else:
-        _query_execution_payload = _executions.wait_query(
-            query_execution_id=query_execution_id,
-            boto3_session=boto3_session,
-            athena_query_wait_polling_delay=athena_query_wait_polling_delay,
+        _query_execution_payload = cast(
+            "QueryExecutionTypeDef",
+            _executions.wait_query(
+                query_execution_id=query_execution_id,
+                boto3_session=boto3_session,
+                athena_query_wait_polling_delay=athena_query_wait_polling_delay,
+            ),
         )
     cols_types: dict[str, str] = get_query_columns_types(
         query_execution_id=query_execution_id, boto3_session=boto3_session
@@ -267,8 +270,8 @@ def _get_query_metadata(
     if "ResultConfiguration" in _query_execution_payload:
         output_location = _query_execution_payload["ResultConfiguration"].get("OutputLocation")
 
-    athena_statistics: dict[str, int | str] = _query_execution_payload.get("Statistics", {})
-    manifest_location: str | None = str(athena_statistics.get("DataManifestLocation"))
+    athena_statistics = _query_execution_payload.get("Statistics", {})
+    manifest_location: str | None = athena_statistics.get("DataManifestLocation")
 
     if metadata_cache_manager is not None and query_execution_id not in metadata_cache_manager:
         metadata_cache_manager.update_cache(items=[_query_execution_payload])
@@ -379,15 +382,14 @@ def get_named_query_statement(
 
     Parameters
     ----------
-    named_query_id: str
+    named_query_id
         The unique ID of the query. Used to get the query statement from a saved query.
         Requires access to the workgroup where the query is saved.
-    boto3_session : boto3.Session(), optional
-        Boto3 Session. If none, the default boto3 session is used.
+    boto3_session
+        The default boto3 session will be used if **boto3_session** receive ``None``.
 
     Returns
     -------
-    str
         The named query statement string
     """
     client_athena = _utils.client(service_name="athena", session=boto3_session)
@@ -401,14 +403,13 @@ def get_query_columns_types(query_execution_id: str, boto3_session: boto3.Sessio
 
     Parameters
     ----------
-    query_execution_id : str
+    query_execution_id
         Athena query execution ID.
-    boto3_session : boto3.Session(), optional
-        Boto3 Session. If none, the default boto3 session is used.
+    boto3_session
+        The default boto3 session will be used if **boto3_session** receive ``None``.
 
     Returns
     -------
-    Dict[str, str]
         Dictionary with all data types.
 
     Examples
@@ -434,12 +435,11 @@ def create_athena_bucket(boto3_session: boto3.Session | None = None) -> str:
 
     Parameters
     ----------
-    boto3_session : boto3.Session(), optional
-        Boto3 Session. The default boto3 session will be used if boto3_session receive None.
+    boto3_session
+        The default boto3 session will be used if **boto3_session** receive ``None``.
 
     Returns
     -------
-    str
         Bucket s3 path (E.g. s3://aws-athena-query-results-ACCOUNT-REGION/)
 
     Examples
@@ -493,28 +493,27 @@ def repair_table(
 
     Parameters
     ----------
-    table : str
+    table
         Table name.
-    database : str, optional
+    database
         AWS Glue/Athena database name.
-    data_source: str, optional
+    data_source
         Data Source / Catalog name. If None, 'AwsDataCatalog' is used.
-    s3_output : str, optional
+    s3_output
         AWS S3 path.
-    workgroup : str
+    workgroup
         Athena workgroup. Primary by default.
-    encryption : str, optional
+    encryption
         None, 'SSE_S3', 'SSE_KMS', 'CSE_KMS'.
-    kms_key : str, optional
+    kms_key
         For SSE-KMS and CSE-KMS , this is the KMS key ARN or ID.
-    athena_query_wait_polling_delay: float, default: 1.0 seconds
+    athena_query_wait_polling_delay
         Interval in seconds for how often the function will check if the Athena query has completed.
-    boto3_session : boto3.Session(), optional
-        Boto3 Session. The default boto3 session will be used if boto3_session receive None.
+    boto3_session
+        The default boto3 session will be used if **boto3_session** receive ``None``.
 
     Returns
     -------
-    str
         Query final state ('SUCCEEDED', 'FAILED', 'CANCELLED').
 
     Examples
@@ -571,29 +570,28 @@ def describe_table(
 
     Parameters
     ----------
-    table : str
+    table
         Table name.
-    database : str, optional
+    database
         AWS Glue/Athena database name.
-    s3_output : str, optional
+    s3_output
         AWS S3 path.
-    workgroup : str
+    workgroup
         Athena workgroup. Primary by default.
-    encryption : str, optional
+    encryption
         None, 'SSE_S3', 'SSE_KMS', 'CSE_KMS'.
-    kms_key : str, optional
+    kms_key
         For SSE-KMS and CSE-KMS , this is the KMS key ARN or ID.
-    athena_query_wait_polling_delay: float, default: 1.0 seconds
+    athena_query_wait_polling_delay
         Interval in seconds for how often the function will check if the Athena query has completed.
-    s3_additional_kwargs : dict[str, Any], optional
+    s3_additional_kwargs
         Forwarded to botocore requests.
         e.g. s3_additional_kwargs={'RequestPayer': 'requester'}
-    boto3_session : boto3.Session(), optional
-        Boto3 Session. The default boto3 session will be used if boto3_session receive None.
+    boto3_session
+        The default boto3 session will be used if **boto3_session** receive ``None``.
 
     Returns
     -------
-    pandas.DataFrame
         Pandas DataFrame filled by formatted table information.
 
     Examples
@@ -659,67 +657,67 @@ def create_ctas_table(
 
     Parameters
     ----------
-    sql : str
+    sql
         SELECT SQL query.
-    database: str, optional
+    database
         The name of the database where the original table is stored.
-    ctas_table: str, optional
+    ctas_table
         The name of the CTAS table.
         If None, a name with a random string is used.
-    ctas_database: str, optional
+    ctas_database
         The name of the alternative database where the CTAS table should be stored.
         If None, `database` is used, that is the CTAS table is stored in the same database as the original table.
-    s3_output: str, optional
+    s3_output
         The output Amazon S3 path.
         If None, either the Athena workgroup or client-side location setting is used.
         If a workgroup enforces a query results location, then it overrides this argument.
-    storage_format: str, optional
+    storage_format
         The storage format for the CTAS query results, such as ORC, PARQUET, AVRO, JSON, or TEXTFILE.
         PARQUET by default.
-    write_compression: str, optional
+    write_compression
         The compression type to use for any storage format that allows compression to be specified.
-    partitioning_info: list[str], optional
+    partitioning_info
         A list of columns by which the CTAS table will be partitioned.
-    bucketing_info : tuple[list[str], int], optional
+    bucketing_info
         Tuple consisting of the column names used for bucketing as the first element and the number of buckets as the
         second element.
         Only `str`, `int` and `bool` are supported as column data types for bucketing.
-    field_delimiter: str, optional
+    field_delimiter
         The single-character field delimiter for files in CSV, TSV, and text files.
-    schema_only : bool, optional
+    schema_only
         _description_, by default False
-    workgroup : str
+    workgroup
         Athena workgroup. Primary by default.
-    data_source: str, optional
+    data_source
         Data Source / Catalog name. If None, 'AwsDataCatalog' is used.
-    encryption : str, optional
+    encryption
         Valid values: [None, 'SSE_S3', 'SSE_KMS']. Note: 'CSE_KMS' is not supported.
-    kms_key : str, optional
+    kms_key
         For SSE-KMS, this is the KMS key ARN or ID.
-    categories: List[str], optional
+    categories
         List of columns names that should be returned as pandas.Categorical.
         Recommended for memory restricted environments.
-    wait : bool, default False
+    wait
         Whether to wait for the query to finish and return a dictionary with the Query metadata.
-    athena_query_wait_polling_delay: float, default: 1.0 seconds
+    athena_query_wait_polling_delay
         Interval in seconds for how often the function will check if the Athena query has completed.
-    execution_params: List[str], optional [DEPRECATED]
+    execution_params
+        [**DEPRECATED**]
         A list of values for the parameters that are used in the SQL query.
         This parameter is on a deprecation path.
         Use ``params`` and `paramstyle`` instead.
-    params: Dict[str, Any] | List[str], optional
+    params
         Dictionary or list of parameters to pass to execute method.
         The syntax used to pass parameters depends on the configuration of ``paramstyle``.
-    paramstyle: str, optional
+    paramstyle
         The syntax style to use for the parameters.
         Supported values are ``named`` and ``qmark``.
         The default is ``named``.
-    boto3_session: boto3.Session, optional
-        Boto3 Session. The default boto3 session is used if boto3_session is None.
+    boto3_session
+        The default boto3 session will be used if **boto3_session** receive ``None``.
 
     Returns
     -------
-    Dict[str, Union[str, _QueryMetadata]]
         A dictionary with the the CTAS database and table names.
         If `wait` is `False`, the query ID is included, otherwise a Query metadata object is added instead.
 
@@ -901,29 +899,28 @@ def show_create_table(
 
     Parameters
     ----------
-    table : str
+    table
         Table name.
-    database : str, optional
+    database
         AWS Glue/Athena database name.
-    s3_output : str, optional
+    s3_output
         AWS S3 path.
-    workgroup : str
+    workgroup
         Athena workgroup. Primary by default.
-    encryption : str, optional
+    encryption
         None, 'SSE_S3', 'SSE_KMS', 'CSE_KMS'.
-    kms_key : str, optional
+    kms_key
         For SSE-KMS and CSE-KMS , this is the KMS key ARN or ID.
-    athena_query_wait_polling_delay: float, default: 1.0 seconds
+    athena_query_wait_polling_delay
         Interval in seconds for how often the function will check if the Athena query has completed.
-    s3_additional_kwargs: dict[str, Any]
+    s3_additional_kwargs
         Forwarded to botocore requests.
         e.g. s3_additional_kwargs={'RequestPayer': 'requester'}
-    boto3_session : boto3.Session(), optional
-        Boto3 Session. The default boto3 session will be used if boto3_session receive None.
+    boto3_session
+        The default boto3 session will be used if **boto3_session** receive ``None``.
 
     Returns
     -------
-    str
         The query that created the table.
 
     Examples
@@ -971,19 +968,18 @@ def generate_create_query(
 
     Parameters
     ----------
-    table : str
+    table
         Table name.
-    database : str
+    database
         Database name.
-    catalog_id : str, optional
+    catalog_id
         The ID of the Data Catalog from which to retrieve Databases.
-        If none is provided, the AWS account ID is used by default.
-    boto3_session : boto3.Session(), optional
-        Boto3 Session. The default boto3 session will be used if boto3_session receive None.
+        If ``None`` is provided, the AWS account ID is used by default.
+    boto3_session
+        The default boto3 session will be used if **boto3_session** receive ``None``.
 
     Returns
     -------
-    str
         The query that created the table or view.
 
     Examples
@@ -993,7 +989,7 @@ def generate_create_query(
 
     """
 
-    def parse_columns(columns_description: Sequence["ColumnTypeDef"]) -> str:
+    def parse_columns(columns_description: list["ColumnOutputTypeDef"]) -> str:
         columns_str: list[str] = []
         for column in columns_description:
             column_str = f"  `{column['Name']}` {column['Type']}"
@@ -1049,14 +1045,13 @@ def get_work_group(workgroup: str, boto3_session: boto3.Session | None = None) -
 
     Parameters
     ----------
-    workgroup : str
+    workgroup
         Work Group name.
-    boto3_session : boto3.Session(), optional
-        Boto3 Session. The default boto3 session will be used if boto3_session receive None.
+    boto3_session
+        The default boto3 session will be used if **boto3_session** is ``None``.
 
     Returns
     -------
-    Dict[str, Any]
         https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/athena.html#Athena.Client.get_work_group
 
     Examples
@@ -1087,29 +1082,26 @@ def get_query_executions(
 
     Parameters
     ----------
-    query_execution_ids : List[str]
+    query_execution_ids
         Athena query execution IDs.
-    return_unprocessed: bool.
+    return_unprocessed
         True to also return query executions id that are unable to be processed.
         False to only return DataFrame of query execution details.
         Default is False
-    boto3_session : boto3.Session(), optional
-        Boto3 Session. The default boto3 session will be used if boto3_session receive None.
+    boto3_session
+        The default boto3 session will be used if **boto3_session** is ``None``.
 
     Returns
     -------
-    DataFrame
-        DataFrame contain information about query execution details.
-
-    DataFrame
-        DataFrame contain information about unprocessed query execution ids.
+        DataFrame containing either information about query execution details.
+        Optionally, another DataFrame containing unprocessed query execution IDs.
 
     Examples
     --------
     >>> import awswrangler as wr
     >>> query_executions_df, unprocessed_query_executions_df = wr.athena.get_query_executions(
-            query_execution_ids=['query-execution-id','query-execution-id1']
-        )
+    >>>     query_execution_ids=['query-execution-id','query-execution-id1']
+    >>> )
     """
     chunked_size: int = 50
     query_executions = []
@@ -1140,18 +1132,17 @@ def list_query_executions(
 
     Parameters
     ----------
-    workgroup: str
+    workgroup
         The name of the workgroup from which the query_id are being returned.
         If not specified, a list of available query execution IDs for the queries in the primary workgroup is returned.
-    max_results: int, optional
+    max_results
         The maximum number of query execution IDs to return in this request.
         If not present, all execution IDs will be returned.
-    boto3_session: boto3.Session(), optional
-        Boto3 Session. The default boto3 session will be used if boto3_session receive None.
+    boto3_session
+        The default boto3 session will be used if **boto3_session** is ``None``.
 
     Returns
     -------
-    List[str]
         List of query execution IDs.
 
     Examples

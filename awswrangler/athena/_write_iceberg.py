@@ -115,7 +115,13 @@ def _determine_differences(
 
     catalog_column_types = typing.cast(
         Dict[str, str],
-        catalog.get_table_types(database=database, table=table, catalog_id=catalog_id, boto3_session=boto3_session),
+        catalog.get_table_types(
+            database=database,
+            table=table,
+            catalog_id=catalog_id,
+            filter_iceberg_current=True,
+            boto3_session=boto3_session,
+        ),
     )
 
     original_column_names = set(catalog_column_types)
@@ -239,6 +245,109 @@ def _validate_args(
         )
 
 
+def _merge_iceberg(
+    df: pd.DataFrame,
+    database: str,
+    table: str,
+    source_table: str,
+    merge_cols: list[str] | None = None,
+    merge_condition: Literal["update", "ignore"] = "update",
+    merge_match_nulls: bool = False,
+    kms_key: str | None = None,
+    boto3_session: boto3.Session | None = None,
+    s3_output: str | None = None,
+    workgroup: str = "primary",
+    encryption: str | None = None,
+    data_source: str | None = None,
+) -> None:
+    """
+    Merge iceberg.
+
+    Merge data from source_table and write it to an Athena iceberg table.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Pandas DataFrame.
+    database : str
+        AWS Glue/Athena database name - It is only the origin database from where the query will be launched.
+        You can still using and mixing several databases writing the full table name within the sql
+        (e.g. `database.table`).
+    table : str
+        AWS Glue/Athena destination table name.
+    source_table: str
+        AWS Glue/Athena source table name.
+    merge_cols: List[str], optional
+        List of column names that will be used for conditional inserts and updates.
+
+        https://docs.aws.amazon.com/athena/latest/ug/merge-into-statement.html
+    merge_condition: str, optional
+        The condition to be used in the MERGE INTO statement. Valid values: ['update', 'ignore'].
+    merge_match_nulls: bool, optional
+        Instruct whether to have nulls in the merge condition match other nulls
+    kms_key : str, optional
+        For SSE-KMS, this is the KMS key ARN or ID.
+    boto3_session : boto3.Session(), optional
+        Boto3 Session. The default boto3 session will be used if boto3_session receive None.
+    s3_output : str, optional
+        Amazon S3 path used for query execution.
+    workgroup : str
+        Athena workgroup. Primary by default.
+    encryption : str, optional
+        Valid values: [None, 'SSE_S3', 'SSE_KMS']. Notice: 'CSE_KMS' is not supported.
+    data_source : str, optional
+        Data Source / Catalog name. If None, 'AwsDataCatalog' will be used by default.
+
+    Returns
+    -------
+    None
+
+    """
+    wg_config: _WorkGroupConfig = _get_workgroup_config(session=boto3_session, workgroup=workgroup)
+
+    sql_statement: str
+    if merge_cols:
+        if merge_condition == "update":
+            match_condition = f"""WHEN MATCHED THEN
+                UPDATE SET {', '.join([f'"{x}" = source."{x}"' for x in df.columns])}"""
+        else:
+            match_condition = ""
+
+        if merge_match_nulls:
+            merge_conditions = [f'(target."{x}" IS NOT DISTINCT FROM source."{x}")' for x in merge_cols]
+        else:
+            merge_conditions = [f'(target."{x}" = source."{x}")' for x in merge_cols]
+
+        sql_statement = f"""
+            MERGE INTO "{database}"."{table}" target
+            USING "{database}"."{source_table}" source
+            ON {' AND '.join(merge_conditions)}
+            {match_condition}
+            WHEN NOT MATCHED THEN
+                INSERT ({', '.join([f'"{x}"' for x in df.columns])})
+                VALUES ({', '.join([f'source."{x}"' for x in df.columns])})
+        """
+    else:
+        sql_statement = f"""
+        INSERT INTO "{database}"."{table}" ({', '.join([f'"{x}"' for x in df.columns])})
+        SELECT {', '.join([f'"{x}"' for x in df.columns])}
+          FROM "{database}"."{source_table}"
+        """
+
+    query_execution_id: str = _start_query_execution(
+        sql=sql_statement,
+        workgroup=workgroup,
+        wg_config=wg_config,
+        database=database,
+        data_source=data_source,
+        s3_output=s3_output,
+        encryption=encryption,
+        kms_key=kms_key,
+        boto3_session=boto3_session,
+    )
+    wait_query(query_execution_id=query_execution_id, boto3_session=boto3_session)
+
+
 @apply_configs
 @_utils.validate_distributed_kwargs(
     unsupported_kwargs=["boto3_session", "s3_additional_kwargs"],
@@ -253,6 +362,7 @@ def to_iceberg(
     partition_cols: list[str] | None = None,
     merge_cols: list[str] | None = None,
     merge_condition: Literal["update", "ignore"] = "update",
+    merge_match_nulls: bool = False,
     keep_files: bool = True,
     data_source: str | None = None,
     s3_output: str | None = None,
@@ -276,78 +386,76 @@ def to_iceberg(
 
     Parameters
     ----------
-    df : pd.DataFrame
+    df
         Pandas DataFrame.
-    database : str
+    database
         AWS Glue/Athena database name - It is only the origin database from where the query will be launched.
         You can still using and mixing several databases writing the full table name within the sql
         (e.g. `database.table`).
-    table : str
+    table
         AWS Glue/Athena table name.
-    temp_path : str
+    temp_path
         Amazon S3 location to store temporary results. Workgroup config will be used if not provided.
-    index: bool
+    index
         Should consider the DataFrame index as a column?.
-    table_location : str, optional
+    table_location
         Amazon S3 location for the table. Will only be used to create a new table if it does not exist.
-    partition_cols: List[str], optional
+    partition_cols
         List of column names that will be used to create partitions, including support for transform
         functions (e.g. "day(ts)").
 
         https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg-creating-tables.html#querying-iceberg-partitioning
-    merge_cols: List[str], optional
+    merge_cols
         List of column names that will be used for conditional inserts and updates.
 
         https://docs.aws.amazon.com/athena/latest/ug/merge-into-statement.html
-    merge_condition: str, optional
+    merge_condition
         The condition to be used in the MERGE INTO statement. Valid values: ['update', 'ignore'].
-    keep_files : bool
+    merge_match_nulls
+        Instruct whether to have nulls in the merge condition match other nulls
+    keep_files
         Whether staging files produced by Athena are retained. 'True' by default.
-    data_source : str, optional
+    data_source
         Data Source / Catalog name. If None, 'AwsDataCatalog' will be used by default.
-    s3_output : str, optional
+    s3_output
         Amazon S3 path used for query execution.
-    workgroup : str
+    workgroup
         Athena workgroup. Primary by default.
-    mode: str
+    mode
         ``append`` (default), ``overwrite``, ``overwrite_partitions``.
-    encryption : str, optional
+    encryption
         Valid values: [None, 'SSE_S3', 'SSE_KMS']. Notice: 'CSE_KMS' is not supported.
-    kms_key : str, optional
+    kms_key
         For SSE-KMS, this is the KMS key ARN or ID.
-    boto3_session : boto3.Session(), optional
-        Boto3 Session. The default boto3 session will be used if boto3_session receive None.
-    s3_additional_kwargs: dict[str, Any], optional
+    boto3_session
+        The default boto3 session will be used if **boto3_session** receive ``None``.
+    s3_additional_kwargs
         Forwarded to botocore requests.
         e.g. s3_additional_kwargs={'RequestPayer': 'requester'}
-    additional_table_properties: dict[str, Any], optional
+    additional_table_properties
         Additional table properties.
         e.g. additional_table_properties={'write_target_data_file_size_bytes': '536870912'}
 
         https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg-creating-tables.html#querying-iceberg-table-properties
-    dtype: dict[str, str], optional
+    dtype
         Dictionary of columns names and Athena/Glue types to be casted.
         Useful when you have columns with undetermined or mixed data types.
         e.g. {'col name': 'bigint', 'col2 name': 'int'}
-    catalog_id : str, optional
+    catalog_id
         The ID of the Data Catalog from which to retrieve Databases.
         If none is provided, the AWS account ID is used by default
-    schema_evolution: bool, optional
+    schema_evolution
         If ``True`` allows schema evolution for new columns or changes in column types.
         Columns missing from the DataFrame that are present in the Iceberg schema
         will throw an error unless ``fill_missing_columns_in_df`` is set to ``True``.
         Default is ``False``.
-    fill_missing_columns_in_df: bool, optional
+    fill_missing_columns_in_df
         If ``True``, fill columns that was missing in the DataFrame with ``NULL`` values.
         Default is ``True``.
-    columns_comments: GlueTableSettings, optional
+    columns_comments
         Glue/Athena catalog: Settings for writing to the Glue table.
         Currently only the 'columns_comments' attribute is supported for this function.
         Columns comments can only be added with this function when creating a new table.
-
-    Returns
-    -------
-    None
 
     Examples
     --------
@@ -504,42 +612,21 @@ def to_iceberg(
             glue_table_settings=glue_table_settings,
         )
 
-        # Insert or merge into Iceberg table
-        sql_statement: str
-        if merge_cols:
-            if merge_condition == "update":
-                match_condition = f"""WHEN MATCHED THEN
-                    UPDATE SET {', '.join([f'"{x}" = source."{x}"' for x in df.columns])}"""
-            else:
-                match_condition = ""
-            sql_statement = f"""
-                MERGE INTO "{database}"."{table}" target
-                USING "{database}"."{temp_table}" source
-                ON {' AND '.join([f'target."{x}" = source."{x}"' for x in merge_cols])}
-                {match_condition}
-                WHEN NOT MATCHED THEN
-                    INSERT ({', '.join([f'"{x}"' for x in df.columns])})
-                    VALUES ({', '.join([f'source."{x}"' for x in df.columns])})
-            """
-        else:
-            sql_statement = f"""
-            INSERT INTO "{database}"."{table}" ({', '.join([f'"{x}"' for x in df.columns])})
-            SELECT {', '.join([f'"{x}"' for x in df.columns])}
-              FROM "{database}"."{temp_table}"
-            """
-
-        query_execution_id: str = _start_query_execution(
-            sql=sql_statement,
-            workgroup=workgroup,
-            wg_config=wg_config,
+        _merge_iceberg(
+            df=df,
             database=database,
-            data_source=data_source,
-            s3_output=s3_output,
-            encryption=encryption,
+            table=table,
+            source_table=temp_table,
+            merge_cols=merge_cols,
+            merge_condition=merge_condition,
+            merge_match_nulls=merge_match_nulls,
             kms_key=kms_key,
             boto3_session=boto3_session,
+            s3_output=s3_output,
+            workgroup=workgroup,
+            encryption=encryption,
+            data_source=data_source,
         )
-        wait_query(query_execution_id=query_execution_id, boto3_session=boto3_session)
 
     except Exception as ex:
         _logger.error(ex)
@@ -585,42 +672,38 @@ def delete_from_iceberg_table(
 
     Parameters
     ----------
-    df: pandas.DataFrame
+    df
         Pandas DataFrame containing the IDs of rows that are to be deleted from the Iceberg table.
-    database: str
+    database
         Database name.
-    table: str
+    table
         Table name.
-    merge_cols: list[str]
+    merge_cols
         List of columns to be used to determine which rows of the Iceberg table should be deleted.
 
         `MERGE INTO <https://docs.aws.amazon.com/athena/latest/ug/merge-into-statement.html>`_
-    temp_path: str, optional
+    temp_path
         S3 path to temporarily store the DataFrame.
-    keep_files: bool
+    keep_files
         Whether staging files produced by Athena are retained. ``True`` by default.
-    data_source: str, optional
+    data_source
         The AWS KMS key ID or alias used to encrypt the data.
-    s3_output: str, optional
+    s3_output
         Amazon S3 path used for query execution.
-    workgroup: str, optional
+    workgroup
         Athena workgroup name.
-    encryption: str, optional
+    encryption
         Valid values: [``None``, ``"SSE_S3"``, ``"SSE_KMS"``]. Notice: ``"CSE_KMS"`` is not supported.
-    kms_key: str, optional
+    kms_key
         For SSE-KMS, this is the KMS key ARN or ID.
-    boto3_session: boto3.Session(), optional
-        Boto3 Session. The default boto3 session will be used if ``boto3_session`` receive None.
-    s3_additional_kwargs: Optional[Dict[str, Any]]
+    boto3_session
+        The default boto3 session will be used if **boto3_session** receive ``None``.
+    s3_additional_kwargs
         Forwarded to botocore requests.
         e.g. ```s3_additional_kwargs={"RequestPayer": "requester"}```
-    catalog_id: str, optional
+    catalog_id
         The ID of the Data Catalog which contains the database and table.
         If none is provided, the AWS account ID is used by default.
-
-    Returns
-    -------
-    None
 
     Examples
     --------

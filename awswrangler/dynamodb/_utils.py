@@ -23,7 +23,7 @@ if TYPE_CHECKING:
         ExecuteStatementOutputTypeDef,
         KeySchemaElementTypeDef,
         TableAttributeValueTypeDef,
-        WriteRequestTypeDef,
+        WriteRequestOutputTypeDef,
     )
 
 
@@ -40,14 +40,13 @@ def get_table(
 
     Parameters
     ----------
-    table_name : str
+    table_name
         Name of the Amazon DynamoDB table.
-    boto3_session : Optional[boto3.Session()]
-        Boto3 Session. If None, the default boto3 Session is used.
+    boto3_session
+        The default boto3 session will be used if **boto3_session** is ``None``.
 
     Returns
     -------
-    dynamodb_table : boto3.resources.dynamodb.Table
         Boto3 DynamoDB.Table object.
         https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/dynamodb.html#DynamoDB.Table
     """
@@ -124,18 +123,17 @@ def execute_statement(
 
     Parameters
     ----------
-    statement : str
+    statement
         The PartiQL statement.
-    parameters : Optional[List[Any]]
+    parameters
         The list of PartiQL parameters. These are applied to the statement in the order they are listed.
-    consistent_read: bool
+    consistent_read
         The consistency of a read operation. If `True`, then a strongly consistent read is used. False by default.
-    boto3_session : Optional[boto3.Session]
+    boto3_session
         Boto3 Session. If None, the default boto3 Session is used.
 
     Returns
     -------
-    Optional[Iterator[Dict[str, Any]]]
         An iterator of the items from the statement response, if any.
 
     Examples
@@ -214,7 +212,7 @@ class _TableBatchWriter:
     ):
         self._table_name = table_name
         self._client = client
-        self._items_buffer: list["WriteRequestTypeDef"] = []
+        self._items_buffer: list["WriteRequestOutputTypeDef"] = []
         self._flush_amount = flush_amount
         self._overwrite_by_pkeys = overwrite_by_pkeys
 
@@ -240,14 +238,16 @@ class _TableBatchWriter:
         """
         self._add_request_and_process({"DeleteRequest": {"Key": key}})
 
-    def _add_request_and_process(self, request: "WriteRequestTypeDef") -> None:
+    def _add_request_and_process(self, request: "WriteRequestOutputTypeDef") -> None:
         if self._overwrite_by_pkeys:
             self._remove_dup_pkeys_request_if_any(request, self._overwrite_by_pkeys)
 
         self._items_buffer.append(request)
         self._flush_if_needed()
 
-    def _remove_dup_pkeys_request_if_any(self, request: "WriteRequestTypeDef", overwrite_by_pkeys: list[str]) -> None:
+    def _remove_dup_pkeys_request_if_any(
+        self, request: "WriteRequestOutputTypeDef", overwrite_by_pkeys: list[str]
+    ) -> None:
         pkey_values_new = self._extract_pkey_values(request, overwrite_by_pkeys)
         for item in self._items_buffer:
             if self._extract_pkey_values(item, overwrite_by_pkeys) == pkey_values_new:
@@ -257,7 +257,9 @@ class _TableBatchWriter:
                     item,
                 )
 
-    def _extract_pkey_values(self, request: "WriteRequestTypeDef", overwrite_by_pkeys: list[str]) -> list[Any] | None:
+    def _extract_pkey_values(
+        self, request: "WriteRequestOutputTypeDef", overwrite_by_pkeys: list[str]
+    ) -> list[Any] | None:
         if request.get("PutRequest"):
             return [request["PutRequest"]["Item"][key] for key in overwrite_by_pkeys]
         if request.get("DeleteRequest"):

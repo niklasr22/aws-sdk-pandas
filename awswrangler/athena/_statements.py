@@ -48,20 +48,20 @@ def create_prepared_statement(
 
     Parameters
     ----------
-    sql : str
+    sql
         The query string for the prepared statement.
-    statement_name : str
+    statement_name
         The name of the prepared statement.
-    workgroup : str
+    workgroup
         The name of the workgroup to which the prepared statement belongs. Primary by default.
-    mode: str
+    mode
         Determines the behaviour if the prepared statement already exists:
 
         - ``update`` - updates statement if already exists
         - ``error`` - throws an error if table exists
 
-    boto3_session : boto3.Session(), optional
-        Boto3 Session. The default boto3 session will be used if boto3_session receive None.
+    boto3_session
+        The default boto3 session will be used if **boto3_session** receive ``None``.
 
     Examples
     --------
@@ -97,20 +97,21 @@ def create_prepared_statement(
 
 
 @apply_configs
-def list_prepared_statements(workgroup: str = "primary", boto3_session: boto3.Session | None = None) -> list[str]:
+def list_prepared_statements(
+    workgroup: str = "primary", boto3_session: boto3.Session | None = None
+) -> list[dict[str, Any]]:
     """
     List the prepared statements in the specified workgroup.
 
     Parameters
     ----------
-    workgroup: str
+    workgroup
         The name of the workgroup to which the prepared statement belongs. Primary by default.
-    boto3_session : boto3.Session(), optional
-        Boto3 Session. The default boto3 session will be used if boto3_session receive None.
+    boto3_session
+        The default boto3 session will be used if **boto3_session** receive ``None``.
 
     Returns
     -------
-    List[Dict[str, Any]]
         List of prepared statements in the workgroup.
         Each item is a dictionary with the keys ``StatementName`` and ``LastModifiedTime``.
     """
@@ -139,12 +140,12 @@ def delete_prepared_statement(
 
     Parameters
     ----------
-    statement_name : str
+    statement_name
         The name of the prepared statement.
-    workgroup : str, optional
+    workgroup
         The name of the workgroup to which the prepared statement belongs. Primary by default.
-    boto3_session : boto3.Session(), optional
-        Boto3 Session. The default boto3 session will be used if boto3_session receive None.
+    boto3_session
+        The default boto3 session will be used if **boto3_session** receive ``None``.
 
     Examples
     --------

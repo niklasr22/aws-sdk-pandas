@@ -16,7 +16,7 @@ export CMAKE_PREFIX_PATH=$ARROW_HOME:$CMAKE_PREFIX_PATH
 
 git clone \
   --depth 1 \
-  --branch apache-arrow-14.0.1 \
+  --branch apache-arrow-16.1.0 \
   --single-branch \
   https://github.com/apache/arrow.git
 
@@ -82,6 +82,9 @@ popd
 pushd /aws-sdk-pandas
 
 pip3 install . -t ./python ".[redshift,mysql,postgres,gremlin,opensearch,openpyxl]"
+
+# Install Numpy 1.x because 2.x is not support in layers right now
+pip3 install -t ./python --upgrade "numpy==1.*"
 
 rm -rf python/pyarrow*
 rm -rf python/boto*
